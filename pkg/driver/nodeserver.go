@@ -25,12 +25,10 @@ SOFTWARE.
 package driver
 
 import (
-	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
-	"time"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
 	"github.com/golang/glog"
@@ -53,6 +51,13 @@ func (d *driver) NodeUnstageVolume(ctx context.Context, req *csi.NodeUnstageVolu
 }
 
 func (d *driver) NodePublishVolume(ctx context.Context, req *csi.NodePublishVolumeRequest) (*csi.NodePublishVolumeResponse, error) {
+	var err error
+	rpath := "/"
+	if e, ok := req.VolumeContext["path"]; ok {
+		rpath = e
+	}
+	vfsOpt := make(map[string]any)
+	mountOpt := make(map[string]any)
 	if _, e := os.Stat(req.TargetPath); e != nil {
 		if errors.Is(e, os.ErrNotExist) {
 			e = os.MkdirAll(req.TargetPath, 0755)
@@ -61,57 +66,34 @@ func (d *driver) NodePublishVolume(ctx context.Context, req *csi.NodePublishVolu
 			return &csi.NodePublishVolumeResponse{}, e
 		}
 	}
-	args := []string{"mount"}
-	p := "/"
-	if e, ok := req.VolumeContext["path"]; ok {
-		p = e
+	if _, err = d.remoteCreate(req.VolumeId, req.VolumeContext["parameters"]); err != nil {
+		goto clean
 	}
-	args = append(args, fmt.Sprintf(":%s:%s", req.VolumeContext["type"], p), req.TargetPath)
+	if v, ok := req.VolumeContext["vfs"]; ok {
+		if err = json.Unmarshal([]byte(v), &vfsOpt); err != nil {
+			goto clean
+		}
+	}
 	if req.Readonly {
-		args = append(args, "--read-only")
+		vfsOpt["ReadOnly"] = true
 	}
-	for k, v := range req.VolumeContext {
-		if k == "path" || k == "type" || k == "wait" {
-			continue
+	if v, ok := req.VolumeContext["mount"]; ok {
+		if err = json.Unmarshal([]byte(v), &mountOpt); err != nil {
+			goto clean
 		}
-		args = append(args, "--"+k, v)
 	}
-	var b *bytes.Buffer
-	var err error
-	ch := make(chan struct{})
-	go func() {
-		b, err = d.exec(args...)
-		if err != nil {
-			err = fmt.Errorf("err: %+v\nout: %s", err, b.String())
-		}
-		ch <- struct{}{}
-	}()
-	wait, ve := time.ParseDuration(req.VolumeContext["wait"])
-	if ve != nil {
-		wait = 10 * time.Second
-	}
-	select {
-	case <-ch:
-		glog.V(5).Infof("publish volume: %s", err)
-		return &csi.NodePublishVolumeResponse{}, err
-	case <-time.After(wait):
-		return &csi.NodePublishVolumeResponse{}, nil
-	}
+	_, err = d.remoteMount(req.VolumeId, rpath, req.TargetPath, vfsOpt, mountOpt)
+clean:
+	glog.V(5).Infof("publish volume: %s", err)
+	return &csi.NodePublishVolumeResponse{}, err
 }
 
 func (d *driver) NodeUnpublishVolume(ctx context.Context, req *csi.NodeUnpublishVolumeRequest) (*csi.NodeUnpublishVolumeResponse, error) {
 	var err error
-	b := &bytes.Buffer{}
 	if _, e := os.Stat(req.TargetPath); e == nil {
-		cmd := exec.Command("umount", req.TargetPath)
-		cmd.Stdout = b
-		cmd.Stderr = b
-		err = cmd.Run()
+		_, err = d.remoteUmount(req.TargetPath)
 	}
-	if err != nil {
-		err = fmt.Errorf("err: %+v\nout: %s", err, b.String())
-		glog.V(5).Infof("unpublish volume: %s", err)
-	}
+	glog.V(5).Infof("unpublish volume: %s", err)
 	return &csi.NodeUnpublishVolumeResponse{}, err
 }
 

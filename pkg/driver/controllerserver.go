@@ -38,12 +38,12 @@ func (d *driver) ListVolumes(ctx context.Context, req *csi.ListVolumesRequest) (
 	vols := &csi.ListVolumesResponse{
 		Entries: []*csi.ListVolumesResponse_Entry{},
 	}
-	rs, err := d.listremotes()
+	rs, err := d.remoteList()
 	if err != nil {
 		return nil, err
 	}
 	for _, r := range rs {
-		ri, err := d.aboutremote(r)
+		ri, err := d.remoteAbout(r, "")
 		if err != nil {
 			return nil, err
 		}
@@ -59,7 +59,7 @@ func (d *driver) ListVolumes(ctx context.Context, req *csi.ListVolumesRequest) (
 }
 
 func (d *driver) ControllerGetVolume(ctx context.Context, req *csi.ControllerGetVolumeRequest) (*csi.ControllerGetVolumeResponse, error) {
-	ri, err := d.aboutremote(req.VolumeId)
+	ri, err := d.remoteAbout(req.VolumeId, "")
 	if err != nil {
 		return nil, err
 	}
@@ -81,10 +81,11 @@ func (d *driver) ValidateVolumeCapabilities(ctx context.Context, req *csi.Valida
 		csi.VolumeCapability_AccessMode_MULTI_NODE_READER_ONLY,
 		csi.VolumeCapability_AccessMode_MULTI_NODE_SINGLE_WRITER,
 	}
+
 	msg := &strings.Builder{}
 	for _, c := range req.VolumeCapabilities {
 		if _, ok := c.GetAccessType().(*csi.VolumeCapability_Mount); !ok {
-			fmt.Fprintf(msg, "[%s]: volume must be mount", req.VolumeId)
+			fmt.Fprintf(msg, "[%s]: volume must be mount\n", req.VolumeId)
 			continue
 		}
 		found := false
@@ -95,7 +96,7 @@ func (d *driver) ValidateVolumeCapabilities(ctx context.Context, req *csi.Valida
 			}
 		}
 		if !found {
-			fmt.Fprintf(msg, "[%s]: unsupported AccessMode %s", req.VolumeId, c.AccessMode.Mode)
+			fmt.Fprintf(msg, "[%s]: unsupported AccessMode %s\n", req.VolumeId, c.AccessMode.Mode)
 			continue
 		}
 	}
@@ -131,15 +132,15 @@ func (d *driver) ControllerGetCapabilities(context.Context, *csi.ControllerGetCa
 	return &csi.ControllerGetCapabilitiesResponse{Capabilities: caps}, nil
 }
 
-func (d *driver) GetCapacity(ctx context.Context, req *csi.GetCapacityRequest) (*csi.GetCapacityResponse, error) {
-	return nil, errors.New("not supported")
-}
-
 func (d *driver) ControllerPublishVolume(ctx context.Context, req *csi.ControllerPublishVolumeRequest) (*csi.ControllerPublishVolumeResponse, error) {
 	return nil, errors.New("not supported")
 }
 
 func (hp *driver) ControllerUnpublishVolume(ctx context.Context, req *csi.ControllerUnpublishVolumeRequest) (*csi.ControllerUnpublishVolumeResponse, error) {
+	return nil, errors.New("not supported")
+}
+
+func (d *driver) GetCapacity(ctx context.Context, req *csi.GetCapacityRequest) (*csi.GetCapacityResponse, error) {
 	return nil, errors.New("not supported")
 }
 

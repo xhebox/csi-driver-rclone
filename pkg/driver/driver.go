@@ -26,10 +26,16 @@ package driver
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"io/ioutil"
+	"net/http"
+	"os"
 	"os/exec"
-	"strings"
+	"time"
 
+	"github.com/golang/glog"
 	"github.com/tidwall/gjson"
 )
 
@@ -43,6 +49,7 @@ type Config struct {
 
 type driver struct {
 	config Config
+	rcd    *exec.Cmd
 }
 
 func NewDriver(cfg Config) (*driver, error) {
@@ -57,9 +64,10 @@ func NewDriver(cfg Config) (*driver, error) {
 	cfg.PluginName = "csi-rclone"
 	cfg.PluginVersion = "v0.1"
 
-	return &driver{
+	d := &driver{
 		config: cfg,
-	}, nil
+	}
+	return d, d.startRCD()
 }
 
 func (d *driver) Run() error {
@@ -67,35 +75,105 @@ func (d *driver) Run() error {
 	// hp itself implements ControllerServer, NodeServer, and IdentityServer.
 	s.Start(d.config.Endpoint, d, d, d)
 	s.Wait()
-	return nil
+
+	var err error
+	ch := make(chan struct{})
+	go func() {
+		err = d.coreQuit()
+		ch <- struct{}{}
+	}()
+	select {
+	case <-ch:
+	case <-time.After(5 * time.Second):
+		glog.Infof("killing rcd %+v", d.rcd.Process.Kill())
+	}
+	glog.Infof("waiting tcd %+v", d.rcd.Wait())
+	return err
 }
 
-func (d *driver) exec(arg ...string) (*bytes.Buffer, error) {
-	buf := &bytes.Buffer{}
+func (d *driver) startRCD() error {
 	args := []string{}
 	if d.config.RcloneConfig != "" {
 		args = append(args, "--config", d.config.RcloneConfig)
 	}
-	args = append(args, arg...)
-	cmd := exec.Command("/bin/rclone", args...)
-	cmd.Stdout = buf
-	cmd.Stderr = buf
-	return buf, cmd.Run()
+	d.rcd = exec.Command("/bin/rclone", "rcd", "--rc-no-auth")
+	d.rcd.Stdout = os.Stdout
+	d.rcd.Stderr = os.Stderr
+	return d.rcd.Start()
 }
 
-func (d *driver) listremotes() ([]string, error) {
-	res, err := d.exec("listremotes")
-	if err != nil {
-		return nil, err
-	}
-	str := strings.ReplaceAll(res.String(), "\n", "")
-	return strings.Split(str, ":"), nil
-}
-
-func (d *driver) aboutremote(r string) (gjson.Result, error) {
-	res, err := d.exec("about", r+":")
+func (d *driver) rc(method string, data map[string]any) (gjson.Result, error) {
+	b, err := json.Marshal(data)
 	if err != nil {
 		return gjson.Result{}, err
 	}
-	return gjson.Parse(res.String()), nil
+	resp, err := http.DefaultClient.Post(fmt.Sprintf("http://localhost:5572/%s", method), "application/json", bytes.NewReader(b))
+	if err != nil {
+		return gjson.Result{}, err
+	}
+	defer resp.Body.Close()
+	all, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return gjson.Result{}, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		err = fmt.Errorf("%d: %s", resp.StatusCode, all)
+	}
+	return gjson.ParseBytes(all), err
+}
+
+func (d *driver) remoteList() ([]string, error) {
+	res, err := d.rc("config/listremotes", nil)
+	v := []string{}
+	for _, e := range res.Get("remotes").Array() {
+		v = append(v, e.String())
+	}
+	return v, err
+}
+
+func (d *driver) remoteAbout(remote, path string) (gjson.Result, error) {
+	return d.rc("operations/about", map[string]any{"fs": fmt.Sprintf("%s:%s", remote, path)})
+}
+
+func (d *driver) remoteCreate(remote string, parameters string) (gjson.Result, error) {
+	return d.rc("config/create", map[string]any{
+		"name":       remote,
+		"type":       gjson.Parse(parameters).Get("type").String(),
+		"parameters": parameters,
+		"opt":        "{\"nonInteractive\": true}",
+	})
+}
+
+func (d *driver) remoteMount(remote, rpath, target string, vfs, mount map[string]any) (gjson.Result, error) {
+	vb, err := json.Marshal(vfs)
+	if err != nil {
+		return gjson.Result{}, err
+	}
+	mb, err := json.Marshal(mount)
+	if err != nil {
+		return gjson.Result{}, err
+	}
+	return d.rc("mount/mount", map[string]any{
+		"fs":         fmt.Sprintf("%s:%s", remote, rpath),
+		"mountPoint": target,
+		"mountOpt":   string(mb),
+		"vfsOpt":     string(vb),
+	})
+}
+
+func (d *driver) remoteUmount(target string) (res gjson.Result, err error) {
+	if target == "" {
+		res, err = d.rc("mount/unmountall", map[string]any{})
+	} else {
+		res, err = d.rc("mount/unmount", map[string]any{"mountPoint": target})
+	}
+	if res.Get("error").String() == "mount not found" {
+		err = nil
+	}
+	return
+}
+
+func (d *driver) coreQuit() error {
+	_, err := d.rc("core/quit", nil)
+	return err
 }
