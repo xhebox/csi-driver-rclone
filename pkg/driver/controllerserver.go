@@ -82,7 +82,18 @@ func (d *driver) ValidateVolumeCapabilities(ctx context.Context, req *csi.Valida
 		csi.VolumeCapability_AccessMode_MULTI_NODE_SINGLE_WRITER,
 	}
 
+	var err error
 	msg := &strings.Builder{}
+
+	if _, err = d.remoteCreate(req.VolumeId, req.VolumeContext["parameters"]); err != nil {
+		fmt.Fprintf(msg, "%+v", err)
+		goto clean
+	}
+	if _, err = d.remoteAbout(req.VolumeId, "/"); err != nil {
+		fmt.Fprintf(msg, "%+v", err)
+		goto clean
+	}
+
 	for _, c := range req.VolumeCapabilities {
 		if _, ok := c.GetAccessType().(*csi.VolumeCapability_Mount); !ok {
 			fmt.Fprintf(msg, "[%s]: volume must be mount\n", req.VolumeId)
@@ -109,9 +120,9 @@ func (d *driver) ValidateVolumeCapabilities(ctx context.Context, req *csi.Valida
 			})
 		}
 		return &csi.ValidateVolumeCapabilitiesResponse{Confirmed: &csi.ValidateVolumeCapabilitiesResponse_Confirmed{VolumeCapabilities: caps}}, nil
-	} else {
-		return &csi.ValidateVolumeCapabilitiesResponse{Message: msg.String()}, nil
 	}
+clean:
+	return &csi.ValidateVolumeCapabilitiesResponse{Message: msg.String()}, nil
 }
 
 func (d *driver) ControllerGetCapabilities(context.Context, *csi.ControllerGetCapabilitiesRequest) (*csi.ControllerGetCapabilitiesResponse, error) {

@@ -15,5 +15,5 @@ cmd_%:
 	go build $(BUILDFLAGS) -o $(OUTPUT) $(SOURCE)
 
 docker-release:
-	podman build --platform linux/amd64 -t "localhost/$(IMAGE_REPO)/csi-rclone:$(IMAGE_TAG)" --build-arg "GOPROXY=$(shell go env GOPROXY)" --build-arg "VERSION=$(VERSION)" --build-arg "COMMIT=$(COMMIT)" -f docker/Dockerfile .
-	podman push "localhost/$(IMAGE_REPO)/csi-rclone:$(IMAGE_TAG)" docker://$(IMAGE_REPO)/csi-rclone:$(IMAGE_TAG)
+	buildah build --platform linux/arm64,linux/amd64 -t "$(IMAGE_REPO)/csi-rclone:$(IMAGE_TAG)" --build-arg "GOPROXY=$(shell go env GOPROXY)" --build-arg "VERSION=$(VERSION)" --build-arg "COMMIT=$(COMMIT)" -f docker/Dockerfile .
+	podman push "$(IMAGE_REPO)/csi-rclone:$(IMAGE_TAG)" docker://$(IMAGE_REPO)/csi-rclone:$(IMAGE_TAG)

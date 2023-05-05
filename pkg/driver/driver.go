@@ -96,30 +96,39 @@ func (d *driver) startRCD() error {
 	if d.config.RcloneConfig != "" {
 		args = append(args, "--config", d.config.RcloneConfig)
 	}
-	d.rcd = exec.Command("/bin/rclone", "rcd", "--rc-no-auth")
+	d.rcd = exec.Command("rclone", "rcd", "--rc-no-auth", "--log-level=INFO")
 	d.rcd.Stdout = os.Stdout
 	d.rcd.Stderr = os.Stderr
 	return d.rcd.Start()
 }
 
 func (d *driver) rc(method string, data map[string]any) (gjson.Result, error) {
+	var res gjson.Result
+
 	b, err := json.Marshal(data)
 	if err != nil {
-		return gjson.Result{}, err
+		return res, err
 	}
 	resp, err := http.DefaultClient.Post(fmt.Sprintf("http://localhost:5572/%s", method), "application/json", bytes.NewReader(b))
 	if err != nil {
-		return gjson.Result{}, err
+		return res, err
 	}
 	defer resp.Body.Close()
+
 	all, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
-		return gjson.Result{}, err
+		return res, err
 	}
+
 	if resp.StatusCode != http.StatusOK {
 		err = fmt.Errorf("%d: %s", resp.StatusCode, all)
+	} else {
+		res = gjson.ParseBytes(all)
+		if res.Get("error").String() != "" {
+			err = fmt.Errorf("%d: %s", resp.StatusCode, all)
+		}
 	}
-	return gjson.ParseBytes(all), err
+	return res, err
 }
 
 func (d *driver) remoteList() ([]string, error) {
@@ -144,7 +153,19 @@ func (d *driver) remoteCreate(remote string, parameters string) (gjson.Result, e
 	})
 }
 
-func (d *driver) remoteMount(remote, rpath, target string, vfs, mount map[string]any) (gjson.Result, error) {
+func (d *driver) remoteMount(remote, rpath, target string, vfs, mount map[string]any) (res gjson.Result, err error) {
+	if _, e := os.Stat(target); e != nil && errors.Is(e, os.ErrNotExist) {
+		if err = os.MkdirAll(target, 0755); err != nil {
+			return
+		}
+	}
+	if _, err = os.Stat(target); err != nil {
+		return
+	}
+	res, err = d.remoteUmount(target)
+	if err != nil {
+		return res, err
+	}
 	vb, err := json.Marshal(vfs)
 	if err != nil {
 		return gjson.Result{}, err
@@ -165,10 +186,13 @@ func (d *driver) remoteUmount(target string) (res gjson.Result, err error) {
 	if target == "" {
 		res, err = d.rc("mount/unmountall", map[string]any{})
 	} else {
+		if _, e := os.Stat(target); e != nil {
+			return
+		}
+		if e := exec.Command("mountpoint", target).Run(); e != nil {
+			return
+		}
 		res, err = d.rc("mount/unmount", map[string]any{"mountPoint": target})
-	}
-	if res.Get("error").String() == "mount not found" {
-		err = nil
 	}
 	return
 }

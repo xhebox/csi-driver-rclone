@@ -26,9 +26,7 @@ package driver
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
-	"os"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
 	"github.com/golang/glog"
@@ -53,21 +51,10 @@ func (d *driver) NodeUnstageVolume(ctx context.Context, req *csi.NodeUnstageVolu
 func (d *driver) NodePublishVolume(ctx context.Context, req *csi.NodePublishVolumeRequest) (*csi.NodePublishVolumeResponse, error) {
 	var err error
 	rpath := "/"
-	if e, ok := req.VolumeContext["path"]; ok {
-		rpath = e
-	}
 	vfsOpt := make(map[string]any)
 	mountOpt := make(map[string]any)
-	if _, e := os.Stat(req.TargetPath); e != nil {
-		if errors.Is(e, os.ErrNotExist) {
-			e = os.MkdirAll(req.TargetPath, 0755)
-		}
-		if e != nil {
-			return &csi.NodePublishVolumeResponse{}, e
-		}
-	}
-	if _, err = d.remoteCreate(req.VolumeId, req.VolumeContext["parameters"]); err != nil {
-		goto clean
+	if v, ok := req.VolumeContext["path"]; ok {
+		rpath = v
 	}
 	if v, ok := req.VolumeContext["vfs"]; ok {
 		if err = json.Unmarshal([]byte(v), &vfsOpt); err != nil {
@@ -82,18 +69,18 @@ func (d *driver) NodePublishVolume(ctx context.Context, req *csi.NodePublishVolu
 			goto clean
 		}
 	}
+	if _, err = d.remoteCreate(req.VolumeId, req.VolumeContext["parameters"]); err != nil {
+		goto clean
+	}
 	_, err = d.remoteMount(req.VolumeId, rpath, req.TargetPath, vfsOpt, mountOpt)
 clean:
-	glog.V(5).Infof("publish volume: %s", err)
+	glog.V(5).Infof("publish volume: %+v", err)
 	return &csi.NodePublishVolumeResponse{}, err
 }
 
 func (d *driver) NodeUnpublishVolume(ctx context.Context, req *csi.NodeUnpublishVolumeRequest) (*csi.NodeUnpublishVolumeResponse, error) {
-	var err error
-	if _, e := os.Stat(req.TargetPath); e == nil {
-		_, err = d.remoteUmount(req.TargetPath)
-	}
-	glog.V(5).Infof("unpublish volume: %s", err)
+	_, err := d.remoteUmount(req.TargetPath)
+	glog.V(5).Infof("unpublish volume: %+v", err)
 	return &csi.NodeUnpublishVolumeResponse{}, err
 }
 
